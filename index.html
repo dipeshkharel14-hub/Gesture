@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Air Draw Pro</title>
+
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+
+  <style>
+    body {
+      margin: 0;
+      background: black;
+      overflow: hidden;
+      font-family: Arial;
+      color: #00ffcc;
+    }
+
+    video, canvas {
+      position: absolute;
+      transform: scaleX(-1);
+    }
+
+    .hud {
+      position: fixed;
+      top: 20px;
+      left: 20px;
+      background: rgba(0,0,0,0.6);
+      border: 1px solid #00ffcc;
+      padding: 15px;
+      border-radius: 10px;
+      box-shadow: 0 0 20px #00ffcc44;
+    }
+
+    button {
+      background: black;
+      color: #00ffcc;
+      border: 1px solid #00ffcc;
+      padding: 6px 10px;
+      cursor: pointer;
+      width: 100%;
+      margin-top: 6px;
+    }
+
+    input[type="range"] {
+      width: 100%;
+    }
+  </style>
+</head>
+
+<body>
+
+<video id="video" autoplay playsinline width="640" height="480"></video>
+<canvas id="canvas" width="640" height="480"></canvas>
+
+<div class="hud">
+  Brush Size
+  <input type="range" id="size" min="1" max="25" value="6">
+  <button id="save">Save</button>
+</div>
+
+<script>
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+
+let brushSize = 6;
+let drawColor = "magenta";
+
+let strokes = [];
+let currentStroke = [];
+
+document.getElementById('size').oninput = e => {
+  brushSize = e.target.value;
+};
+
+document.getElementById('save').onclick = () => {
+  const link = document.createElement('a');
+  link.download = 'drawing.png';
+  link.href = canvas.toDataURL();
+  link.click();
+};
+
+/* Neon Glow Drawing */
+function drawLine(x1, y1, x2, y2) {
+  ctx.strokeStyle = drawColor;
+  ctx.lineWidth = brushSize;
+  ctx.lineCap = "round";
+
+  ctx.shadowBlur = 20;
+  ctx.shadowColor = drawColor;
+
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x2, y2);
+  ctx.stroke();
+
+  ctx.shadowBlur = 0;
+}
+
+/* MediaPipe */
+const hands = new Hands({
+  locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+});
+
+hands.setOptions({
+  maxNumHands: 2,
+  minDetectionConfidence: 0.7,
+  minTrackingConfidence: 0.7
+});
+
+const mpDraw = window.drawConnectors;
+const mpLandmarks = window.drawLandmarks;
+
+hands.onResults(results => {
+
+  if (!results.multiHandLandmarks) return;
+
+  results.multiHandLandmarks.forEach(landmarks => {
+
+    const index = landmarks[8];
+    const middle = landmarks[12];
+    const thumb = landmarks[4];
+    const ring = landmarks[16];
+
+    const x = index.x * canvas.width;
+    const y = index.y * canvas.height;
+
+    const mx = middle.x * canvas.width;
+    const my = middle.y * canvas.height;
+
+    const tx = thumb.x * canvas.width;
+    const ty = thumb.y * canvas.height;
+
+    const rx = ring.x * canvas.width;
+    const ry = ring.y * canvas.height;
+
+    const drawDist = Math.hypot(mx - x, my - y);
+    const eraseDist = Math.hypot(tx - x, ty - y);
+    const undoDist = Math.hypot(rx - x, ry - y);
+
+    /* ✏️ Draw Gesture */
+    if (drawDist < 35) {
+      if (currentStroke.length > 0) {
+        const prev = currentStroke[currentStroke.length - 1];
+        drawLine(prev.x, prev.y, x, y);
+      }
+      currentStroke.push({x, y});
+    }
+
+    /* 🧽 Eraser Gesture */
+    else if (eraseDist < 35) {
+      ctx.clearRect(x - 25, y - 25, 50, 50);
+      currentStroke = [];
+    }
+
+    /* ↩️ Undo Gesture */
+    else if (undoDist < 35) {
+      if (strokes.length > 0) {
+        strokes.pop();
+        redrawCanvas();
+      }
+      currentStroke = [];
+    }
+
+    else {
+      if (currentStroke.length > 0) {
+        strokes.push([...currentStroke]);
+        currentStroke = [];
+      }
+    }
+
+    /* 🖐 Draw Hand Skeleton */
+    drawConnectors(ctx, landmarks, HAND_CONNECTIONS,
+      {color: '#00ffcc', lineWidth: 1});
+
+    drawLandmarks(ctx, landmarks,
+      {color: '#00ffcc', lineWidth: 1});
+  });
+});
+
+/* Redraw for Undo */
+function redrawCanvas() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  strokes.forEach(stroke => {
+    for (let i = 1; i < stroke.length; i++) {
+      drawLine(
+        stroke[i-1].x,
+        stroke[i-1].y,
+        stroke[i].x,
+        stroke[i].y
+      );
+    }
+  });
+}
+
+const camera = new Camera(video, {
+  onFrame: async () => {
+    await hands.send({image: video});
+  },
+  width: 640,
+  height: 480
+});
+
+camera.start();
+</script>
+
+</body>
+</html>
