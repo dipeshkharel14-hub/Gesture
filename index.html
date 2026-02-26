@@ -1,221 +1,233 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <title>Air Draw Cinematic</title>
-
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
-
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Gesture Air Canvas ✋🎨</title>
   <style>
     body {
       margin: 0;
-      background: black;
+      padding: 0;
+      font-family: Arial, sans-serif;
+      background: #111;
+      color: white;
       overflow: hidden;
-      font-family: Arial;
-      color: #00ffcc;
     }
-
-    video, canvas {
-      position: fixed;
-      top: 0;
-      left: 0;
+    #container {
+      position: relative;
       width: 100vw;
       height: 100vh;
+    }
+    #video, #output-canvas {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%;
+      height: 100%;
       object-fit: cover;
-      transform: scaleX(-1);
+      transform: scaleX(-1); /* mirror like phone camera preview */
     }
-
-    .hud {
-      position: fixed;
-      top: 25px;
-      left: 25px;
-      background: rgba(0,0,0,0.45);
-      border: 1px solid #00ffcc;
-      padding: 15px;
+    #output-canvas {
+      z-index: 2;
+    }
+    #video {
+      z-index: 1;
+    }
+    #controls {
+      position: absolute;
+      top: 15px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 10;
+      background: rgba(0,0,0,0.6);
+      padding: 12px 24px;
       border-radius: 12px;
-      backdrop-filter: blur(12px);
-      box-shadow: 0 0 30px #00ffcc22;
+      display: flex;
+      gap: 12px;
+      align-items: center;
     }
-
-    button {
-      background: transparent;
-      color: #00ffcc;
-      border: 1px solid #00ffcc;
-      padding: 8px;
-      width: 180px;
+    .color-btn {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      border: 3px solid #fff;
       cursor: pointer;
-      margin-top: 10px;
+      box-shadow: 0 0 8px rgba(0,0,0,0.6);
     }
-
-    input[type="range"] {
-      width: 180px;
+    #clear {
+      background: #e74c3c;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 8px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+    #clear:hover { background: #c0392b; }
+    #info {
+      position: absolute;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0,0,0,0.7);
+      padding: 10px 20px;
+      border-radius: 10px;
+      font-size: 0.95rem;
+      z-index: 10;
     }
   </style>
 </head>
-
 <body>
+  <div id="container">
+    <video id="video" autoplay playsinline></video>
+    <canvas id="output-canvas"></canvas>
 
-<video id="video" autoplay playsinline></video>
+    <div id="controls">
+      <div class="color-btn" style="background:blue;"    data-color="blue"></div>
+      <div class="color-btn" style="background:green;"  data-color="green"></div>
+      <div class="color-btn" style="background:red;"    data-color="red"></div>
+      <div class="color-btn" style="background:yellow;" data-color="yellow"></div>
+      <button id="clear">CLEAR</button>
+    </div>
 
-<!-- Persistent Drawing -->
-<canvas id="drawCanvas"></canvas>
+    <div id="info">
+      Index finger up → Draw&nbsp;&nbsp;|&nbsp;&nbsp;
+      Two fingers → Select color&nbsp;&nbsp;|&nbsp;&nbsp;
+      Move over palette to change color
+    </div>
+  </div>
 
-<!-- Skeleton Overlay -->
-<canvas id="overlayCanvas"></canvas>
+  <!-- MediaPipe CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
 
-<div class="hud">
-  Brush Size<br>
-  <input type="range" id="size" min="2" max="35" value="10"><br>
-  <button id="save">Save Drawing</button>
-</div>
+  <script>
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('output-canvas');
+    const ctx = canvas.getContext('2d');
+    const clearBtn = document.getElementById('clear');
 
-<script>
-const video = document.getElementById('video');
-const drawCanvas = document.getElementById('drawCanvas');
-const overlayCanvas = document.getElementById('overlayCanvas');
+    let currentColor = 'yellow';
+    let drawing = false;
+    let lastX = null;
+    let lastY = null;
 
-const drawCtx = drawCanvas.getContext('2d');
-const overlayCtx = overlayCanvas.getContext('2d');
+    // Mirror canvas context (because we mirror video)
+    ctx.scale(-1, 1);
+    ctx.translate(-canvas.width, 0);
 
-function resizeCanvas() {
-  drawCanvas.width = overlayCanvas.width = window.innerWidth;
-  drawCanvas.height = overlayCanvas.height = window.innerHeight;
-}
-resizeCanvas();
-window.onresize = resizeCanvas;
+    // Resize canvas to match window
+    function resizeCanvas() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
 
-let brushSize = 10;
-let drawColor = "#ff00ff";
+    // Color buttons
+    document.querySelectorAll('.color-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        currentColor = btn.dataset.color;
+        btn.style.border = '4px solid white';
+        setTimeout(() => btn.style.border = '3px solid white', 300);
+      });
+    });
 
-document.getElementById('size').oninput = e => brushSize = e.target.value;
+    // Clear canvas
+    clearBtn.addEventListener('click', () => {
+      ctx.clearRect(-canvas.width, 0, canvas.width*2, canvas.height);
+    });
 
-document.getElementById('save').onclick = () => {
-  const link = document.createElement('a');
-  link.download = "cinematic-air-draw.png";
-  link.href = drawCanvas.toDataURL();
-  link.click();
-};
+    const hands = new Hands({locateFile: (file) => {
+      return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+    }});
 
-/* ✨ Motion Smoothing Engine */
-let smoothX = null;
-let smoothY = null;
+    hands.setOptions({
+      maxNumHands: 2,
+      modelComplexity: 1,
+      minDetectionConfidence: 0.7,
+      minTrackingConfidence: 0.6
+    });
 
-const SMOOTHING = 0.65;   // higher = smoother
-const INTERPOLATION = 4;  // fills gaps
+    hands.onResults(onResults);
 
-function smoothPosition(x, y) {
-  if (smoothX === null) {
-    smoothX = x;
-    smoothY = y;
-  } else {
-    smoothX = smoothX * SMOOTHING + x * (1 - SMOOTHING);
-    smoothY = smoothY * SMOOTHING + y * (1 - SMOOTHING);
-  }
-  return { x: smoothX, y: smoothY };
-}
+    const camera = new Camera(video, {
+      onFrame: async () => {
+        await hands.send({image: video});
+      },
+      width: 1280,
+      height: 720
+    });
+    camera.start();
 
-/* Neon Ink Renderer */
-function drawNeonLine(x1, y1, x2, y2) {
-  drawCtx.strokeStyle = drawColor;
-  drawCtx.lineWidth = brushSize;
-  drawCtx.lineCap = "round";
+    function onResults(results) {
+      // Mirror video frame (we already mirrored context)
+      ctx.save();
+      ctx.setTransform(1, 0, 0, 1, 0, 0);           // reset
+      ctx.scale(-1, 1);
+      ctx.translate(-canvas.width, 0);
+      ctx.clearRect(-canvas.width, 0, canvas.width*2, canvas.height);
+      ctx.drawImage(video, -canvas.width, 0, canvas.width, canvas.height);
+      ctx.restore();
 
-  drawCtx.shadowBlur = 30;
-  drawCtx.shadowColor = drawColor;
+      // Draw hand landmarks & connections
+      if (results.multiHandLandmarks) {
+        for (const landmarks of results.multiHandLandmarks) {
+          drawConnectors(ctx, landmarks, HAND_CONNECTIONS,
+                         {color: '#00ff00', lineWidth: 3});
+          drawLandmarks(ctx, landmarks, {color: '#ffffff', lineWidth: 1, radius: 4});
 
-  drawCtx.beginPath();
-  drawCtx.moveTo(x1, y1);
-  drawCtx.lineTo(x2, y2);
-  drawCtx.stroke();
+          // ──────────────── Gesture logic ────────────────
+          const indexTip   = landmarks[8];   // index finger tip
+          const indexPip   = landmarks[6];
+          const middleTip  = landmarks[12];
+          const middlePip  = landmarks[10];
+          const thumbTip   = landmarks[4];
 
-  drawCtx.shadowBlur = 0;
-}
+          // Convert normalized coords → pixel (flipped x)
+          const x = (1 - indexTip.x) * canvas.width;   // flip x
+          const y = indexTip.y * canvas.height;
 
-let prevPoint = null;
+          // Simple gesture: index up & middle down → drawing mode
+          const indexUp = indexTip.y < indexPip.y;
+          const middleUp = middleTip.y < middlePip.y;
 
-/* MediaPipe */
-const hands = new Hands({
-  locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
-});
+          if (indexUp && !middleUp) {
+            drawing = true;
+          } else {
+            drawing = false;
+            lastX = null;
+            lastY = null;
+          }
 
-hands.setOptions({
-  maxNumHands: 1,
-  minDetectionConfidence: 0.8,
-  minTrackingConfidence: 0.8,
-  modelComplexity: 1
-});
+          // Color selection (when two fingers up near top of screen)
+          if (indexUp && middleUp) {
+            if (y < 100) {  // top bar area
+              // rough zones (you can improve with better hit detection)
+              if (x < canvas.width * 0.2) currentColor = 'blue';
+              else if (x < canvas.width * 0.4) currentColor = 'green';
+              else if (x < canvas.width * 0.6) currentColor = 'red';
+              else if (x < canvas.width * 0.8) currentColor = 'yellow';
+            }
+          }
 
-hands.onResults(results => {
+          // Draw line if allowed
+          if (drawing && lastX !== null) {
+            ctx.beginPath();
+            ctx.moveTo(lastX, lastY);
+            ctx.lineTo(x, y);
+            ctx.strokeStyle = currentColor;
+            ctx.lineWidth = 8;
+            ctx.lineCap = 'round';
+            ctx.stroke();
+          }
 
-  overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
-
-  if (!results.multiHandLandmarks) {
-    prevPoint = null;
-    smoothX = smoothY = null;
-    return;
-  }
-
-  const landmarks = results.multiHandLandmarks[0];
-
-  const index = landmarks[8];
-  const middle = landmarks[12];
-  const thumb = landmarks[4];
-
-  const rawX = index.x * drawCanvas.width;
-  const rawY = index.y * drawCanvas.height;
-
-  const mx = middle.x * drawCanvas.width;
-  const my = middle.y * drawCanvas.height;
-
-  const tx = thumb.x * drawCanvas.width;
-  const ty = thumb.y * drawCanvas.height;
-
-  const drawDist = Math.hypot(mx - rawX, my - rawY);
-  const eraseDist = Math.hypot(tx - rawX, ty - rawY);
-
-  const smoothed = smoothPosition(rawX, rawY);
-
-  /* ✏️ Cinematic Smooth Drawing */
-  if (drawDist < 35) {
-    if (prevPoint) {
-
-      // Interpolate between frames (removes jumpiness)
-      for (let i = 1; i <= INTERPOLATION; i++) {
-        const ix = prevPoint.x + (smoothed.x - prevPoint.x) * (i / INTERPOLATION);
-        const iy = prevPoint.y + (smoothed.y - prevPoint.y) * (i / INTERPOLATION);
-        drawNeonLine(prevPoint.x, prevPoint.y, ix, iy);
+          lastX = x;
+          lastY = y;
+        }
       }
     }
-    prevPoint = smoothed;
-  }
-
-  /* 🧽 Smooth Eraser */
-  else if (eraseDist < 35) {
-    drawCtx.clearRect(smoothed.x - 50, smoothed.y - 50, 100, 100);
-    prevPoint = null;
-  }
-
-  else {
-    prevPoint = null;
-  }
-
-  /* 🖐 Premium Skeleton Sensors */
-  drawConnectors(overlayCtx, landmarks, HAND_CONNECTIONS,
-    {color: '#00ffcc', lineWidth: 1});
-
-  drawLandmarks(overlayCtx, landmarks,
-    {color: '#00ffcc', lineWidth: 1});
-});
-
-const camera = new Camera(video, {
-  onFrame: async () => {
-    await hands.send({image: video});
-  }
-});
-
-camera.start();
-</script>
-
+  </script>
 </body>
 </html>
