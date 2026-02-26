@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Gesture Air Canvas ✋🎨</title>
+  <title>Gesture Air Canvas ✋🎨 – Mirror Fixed</title>
   <style>
     body {
       margin: 0;
@@ -24,13 +24,13 @@
       width: 100%;
       height: 100%;
       object-fit: cover;
-      transform: scaleX(-1); /* mirror like phone camera preview */
+    }
+    #video {
+      transform: scaleX(-1); /* keep mirror view (most intuitive) */
+      z-index: 1;
     }
     #output-canvas {
       z-index: 2;
-    }
-    #video {
-      z-index: 1;
     }
     #controls {
       position: absolute;
@@ -45,13 +45,23 @@
       gap: 12px;
       align-items: center;
     }
-    .color-btn {
+    .color-btn, .shape-btn {
       width: 40px;
       height: 40px;
       border-radius: 50%;
       border: 3px solid #fff;
       cursor: pointer;
       box-shadow: 0 0 8px rgba(0,0,0,0.6);
+      text-align: center;
+      line-height: 40px;
+      font-size: 20px;
+    }
+    .color-btn {
+      background: var(--color);
+    }
+    .shape-btn {
+      background: #fff;
+      color: #000;
     }
     #clear {
       background: #e74c3c;
@@ -73,6 +83,7 @@
       border-radius: 10px;
       font-size: 0.95rem;
       z-index: 10;
+      text-align: center;
     }
   </style>
 </head>
@@ -82,23 +93,27 @@
     <canvas id="output-canvas"></canvas>
 
     <div id="controls">
-      <div class="color-btn" style="background:blue;"    data-color="blue"></div>
-      <div class="color-btn" style="background:green;"  data-color="green"></div>
-      <div class="color-btn" style="background:red;"    data-color="red"></div>
-      <div class="color-btn" style="background:yellow;" data-color="yellow"></div>
+      <div class="color-btn" style="--color:blue;"    data-color="blue"></div>
+      <div class="color-btn" style="--color:green;"  data-color="green"></div>
+      <div class="color-btn" style="--color:red;"    data-color="red"></div>
+      <div class="color-btn" style="--color:yellow;" data-color="yellow"></div>
+      <div class="shape-btn" data-shape="circle">○</div>
+      <div class="shape-btn" data-shape="square">□</div>
+      <div class="shape-btn" data-shape="triangle">△</div>
+      <div class="shape-btn" data-shape="cube">❒</div>
       <button id="clear">CLEAR</button>
     </div>
 
     <div id="info">
-      Index finger up → Draw&nbsp;&nbsp;|&nbsp;&nbsp;
-      Two fingers → Select color&nbsp;&nbsp;|&nbsp;&nbsp;
-      Move over palette to change color
+      Index finger up → Draw / Place shape<br>
+      Two fingers up → Select color or shape from top bar<br>
+      Pinch (thumb ↔ index) → Grab and move shapes<br>
+      <strong>Fixed:</strong> Moving hand right now moves drawing right (natural mirror behavior)
     </div>
   </div>
 
-  <!-- MediaPipe CDN -->
+  <!-- MediaPipe Hand tracking -->
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
 
@@ -109,15 +124,12 @@
     const clearBtn = document.getElementById('clear');
 
     let currentColor = 'yellow';
-    let drawing = false;
-    let lastX = null;
-    let lastY = null;
+    let currentShape = null;
+    let drawings = [];
+    let currentPath = null;
+    let selectedObject = null;
+    let wasPinching = false;
 
-    // Mirror canvas context (because we mirror video)
-    ctx.scale(-1, 1);
-    ctx.translate(-canvas.width, 0);
-
-    // Resize canvas to match window
     function resizeCanvas() {
       canvas.width = window.innerWidth;
       canvas.height = window.innerHeight;
@@ -125,18 +137,19 @@
     window.addEventListener('resize', resizeCanvas);
     resizeCanvas();
 
-    // Color buttons
-    document.querySelectorAll('.color-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        currentColor = btn.dataset.color;
-        btn.style.border = '4px solid white';
-        setTimeout(() => btn.style.border = '3px solid white', 300);
+    document.querySelectorAll('.color-btn, .shape-btn').forEach(el => {
+      el.addEventListener('click', () => {
+        if (el.dataset.color) {
+          currentColor = el.dataset.color;
+          currentShape = null;
+        } else if (el.dataset.shape) {
+          currentShape = el.dataset.shape;
+        }
       });
     });
 
-    // Clear canvas
     clearBtn.addEventListener('click', () => {
-      ctx.clearRect(-canvas.width, 0, canvas.width*2, canvas.height);
+      drawings = [];
     });
 
     const hands = new Hands({locateFile: (file) => {
@@ -144,9 +157,9 @@
     }});
 
     hands.setOptions({
-      maxNumHands: 2,
+      maxNumHands: 1,
       modelComplexity: 1,
-      minDetectionConfidence: 0.7,
+      minDetectionConfidence: 0.65,
       minTrackingConfidence: 0.6
     });
 
@@ -162,71 +175,156 @@
     camera.start();
 
     function onResults(results) {
-      // Mirror video frame (we already mirrored context)
-      ctx.save();
-      ctx.setTransform(1, 0, 0, 1, 0, 0);           // reset
-      ctx.scale(-1, 1);
-      ctx.translate(-canvas.width, 0);
-      ctx.clearRect(-canvas.width, 0, canvas.width*2, canvas.height);
-      ctx.drawImage(video, -canvas.width, 0, canvas.width, canvas.height);
-      ctx.restore();
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      // Draw hand landmarks & connections
-      if (results.multiHandLandmarks) {
-        for (const landmarks of results.multiHandLandmarks) {
-          drawConnectors(ctx, landmarks, HAND_CONNECTIONS,
-                         {color: '#00ff00', lineWidth: 3});
-          drawLandmarks(ctx, landmarks, {color: '#ffffff', lineWidth: 1, radius: 4});
+      renderDrawings();
 
-          // ──────────────── Gesture logic ────────────────
-          const indexTip   = landmarks[8];   // index finger tip
-          const indexPip   = landmarks[6];
-          const middleTip  = landmarks[12];
-          const middlePip  = landmarks[10];
-          const thumbTip   = landmarks[4];
+      if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+        // Use RAW (non-flipped) landmarks → matches mirrored video perfectly
+        const landmarks = results.multiHandLandmarks[0];
 
-          // Convert normalized coords → pixel (flipped x)
-          const x = (1 - indexTip.x) * canvas.width;   // flip x
-          const y = indexTip.y * canvas.height;
+        drawConnectors(ctx, landmarks, HAND_CONNECTIONS,
+          {color: '#00ff9d', lineWidth: 5});
+        drawLandmarks(ctx, landmarks, {
+          color: '#ffffff',
+          fillColor: '#ff5252',
+          lineWidth: 2,
+          radius: (data) => data.from.z < -0.01 ? 6 : 4
+        });
 
-          // Simple gesture: index up & middle down → drawing mode
-          const indexUp = indexTip.y < indexPip.y;
-          const middleUp = middleTip.y < middlePip.y;
+        const indexTip   = landmarks[8];
+        const indexPip   = landmarks[6];
+        const middleTip  = landmarks[12];
+        const middlePip  = landmarks[10];
+        const thumbTip   = landmarks[4];
 
-          if (indexUp && !middleUp) {
-            drawing = true;
-          } else {
-            drawing = false;
-            lastX = null;
-            lastY = null;
-          }
+        const cursorX = indexTip.x * canvas.width;
+        const cursorY = indexTip.y * canvas.height;
 
-          // Color selection (when two fingers up near top of screen)
-          if (indexUp && middleUp) {
-            if (y < 100) {  // top bar area
-              // rough zones (you can improve with better hit detection)
-              if (x < canvas.width * 0.2) currentColor = 'blue';
-              else if (x < canvas.width * 0.4) currentColor = 'green';
-              else if (x < canvas.width * 0.6) currentColor = 'red';
-              else if (x < canvas.width * 0.8) currentColor = 'yellow';
+        const indexUp  = indexTip.y < indexPip.y - 0.015;
+        const middleUp = middleTip.y < middlePip.y - 0.015;
+
+        // Pinch detection
+        const pinchDist = Math.hypot(
+          thumbTip.x * canvas.width - cursorX,
+          thumbTip.y * canvas.height - cursorY
+        );
+        const isPinching = pinchDist < 45;
+
+        // ─── Pinch logic ───────────────────────────────────────
+        if (isPinching && !wasPinching) {
+          selectedObject = null;
+          for (let i = drawings.length - 1; i >= 0; i--) {
+            const obj = drawings[i];
+            if (obj.type !== 'path') {
+              const d = Math.hypot(obj.x - cursorX, obj.y - cursorY);
+              if (d < (obj.size || 70)) {
+                selectedObject = obj;
+                break;
+              }
             }
           }
 
-          // Draw line if allowed
-          if (drawing && lastX !== null) {
-            ctx.beginPath();
-            ctx.moveTo(lastX, lastY);
-            ctx.lineTo(x, y);
-            ctx.strokeStyle = currentColor;
-            ctx.lineWidth = 8;
-            ctx.lineCap = 'round';
-            ctx.stroke();
+          if (!selectedObject && currentShape) {
+            drawings.push({
+              type: currentShape,
+              x: cursorX,
+              y: cursorY,
+              size: 110,
+              color: currentColor
+            });
           }
+        }
 
-          lastX = x;
-          lastY = y;
+        if (selectedObject && isPinching) {
+          selectedObject.x = cursorX;
+          selectedObject.y = cursorY;
+        }
+
+        if (!isPinching && wasPinching) {
+          selectedObject = null;
+        }
+        wasPinching = isPinching;
+
+        // ─── Selection mode (two fingers up) ──────────────────
+        if (indexUp && middleUp) {
+          if (cursorY < 140) {
+            const f = cursorX / canvas.width;
+            if      (f < 0.14) { currentColor = 'blue';   currentShape = null; }
+            else if (f < 0.28) { currentColor = 'green';  currentShape = null; }
+            else if (f < 0.42) { currentColor = 'red';    currentShape = null; }
+            else if (f < 0.56) { currentColor = 'yellow'; currentShape = null; }
+            else if (f < 0.70) { currentShape = 'circle'; }
+            else if (f < 0.84) { currentShape = 'square'; }
+            else               { currentShape = 'triangle'; } // last two share zone
+          }
+        }
+        // ─── Free drawing ─────────────────────────────────────
+        else if (indexUp && !middleUp && !currentShape && !isPinching) {
+          if (!currentPath) {
+            currentPath = { type: 'path', color: currentColor, points: [], lineWidth: 12 };
+            drawings.push(currentPath);
+          }
+          currentPath.points.push({ x: cursorX, y: cursorY });
+        } else {
+          currentPath = null;
         }
       }
+    }
+
+    function renderDrawings() {
+      drawings.forEach(obj => {
+        ctx.save();
+        ctx.strokeStyle = obj.color;
+        ctx.fillStyle   = obj.color;
+        ctx.lineWidth   = obj.lineWidth || 6;
+        ctx.lineCap     = 'round';
+        ctx.lineJoin    = 'round';
+
+        if (obj.type === 'path') {
+          if (obj.points.length > 1) {
+            ctx.beginPath();
+            ctx.moveTo(obj.points[0].x, obj.points[0].y);
+            for (let i = 1; i < obj.points.length; i++) {
+              ctx.lineTo(obj.points[i].x, obj.points[i].y);
+            }
+            ctx.stroke();
+          }
+        } else if (obj.type === 'circle') {
+          ctx.beginPath();
+          ctx.arc(obj.x, obj.y, obj.size / 2, 0, Math.PI * 2);
+          ctx.stroke();
+        } else if (obj.type === 'square') {
+          ctx.beginPath();
+          ctx.rect(obj.x - obj.size/2, obj.y - obj.size/2, obj.size, obj.size);
+          ctx.stroke();
+        } else if (obj.type === 'triangle') {
+          const s = obj.size / 2;
+          ctx.beginPath();
+          ctx.moveTo(obj.x, obj.y - s);
+          ctx.lineTo(obj.x - s * 0.866, obj.y + s * 0.5);
+          ctx.lineTo(obj.x + s * 0.866, obj.y + s * 0.5);
+          ctx.closePath();
+          ctx.stroke();
+        } else if (obj.type === 'cube') {
+          const s = obj.size / 2;
+          const off = s * 0.45;
+          ctx.beginPath();
+          ctx.rect(obj.x - s, obj.y - s, obj.size, obj.size);           // front
+          ctx.moveTo(obj.x - s, obj.y - s);
+          ctx.lineTo(obj.x - s + off, obj.y - s - off);
+          ctx.lineTo(obj.x + s + off, obj.y - s - off);
+          ctx.lineTo(obj.x + s, obj.y - s);
+          ctx.closePath();                                              // top
+          ctx.moveTo(obj.x + s, obj.y - s);
+          ctx.lineTo(obj.x + s + off, obj.y - s - off);
+          ctx.lineTo(obj.x + s + off, obj.y + s - off);
+          ctx.lineTo(obj.x + s, obj.y + s);
+          ctx.closePath();                                              // right
+          ctx.stroke();
+        }
+        ctx.restore();
+      });
     }
   </script>
 </body>
