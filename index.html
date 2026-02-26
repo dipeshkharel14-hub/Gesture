@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Gesture Air Canvas ✋🎨 – Mirror Fixed</title>
+  <title>Gesture Air Canvas ✋🎨 – Mirror & Shape Controls Fixed</title>
   <style>
     body {
       margin: 0;
@@ -26,7 +26,7 @@
       object-fit: cover;
     }
     #video {
-      transform: scaleX(-1); /* keep mirror view (most intuitive) */
+      transform: scaleX(-1); /* mirror video (selfie style) */
       z-index: 1;
     }
     #output-canvas {
@@ -107,8 +107,8 @@
     <div id="info">
       Index finger up → Draw / Place shape<br>
       Two fingers up → Select color or shape from top bar<br>
-      Pinch (thumb ↔ index) → Grab and move shapes<br>
-      <strong>Fixed:</strong> Moving hand right now moves drawing right (natural mirror behavior)
+      Pinch (thumb ↔ index) → Grab, move, resize (open/close hand), rotate (twist hand) shapes<br>
+      <strong>Fixed:</strong> Hand overlay matches your hand exactly; drawing follows naturally (like writing in a notebook); shapes resize/rotate with hand while pinching
     </div>
   </div>
 
@@ -129,6 +129,10 @@
     let currentPath = null;
     let selectedObject = null;
     let wasPinching = false;
+    let initialHandSpread = 0;
+    let initialHandAngle = 0;
+    let initialSize = 0;
+    let initialRotation = 0;
 
     function resizeCanvas() {
       canvas.width = window.innerWidth;
@@ -180,8 +184,8 @@
       renderDrawings();
 
       if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-        // Use RAW (non-flipped) landmarks → matches mirrored video perfectly
-        const landmarks = results.multiHandLandmarks[0];
+        // Flip landmarks x to match mirrored video
+        const landmarks = results.multiHandLandmarks[0].map(lm => ({ ...lm, x: 1 - lm.x }));
 
         drawConnectors(ctx, landmarks, HAND_CONNECTIONS,
           {color: '#00ff9d', lineWidth: 5});
@@ -197,6 +201,8 @@
         const middleTip  = landmarks[12];
         const middlePip  = landmarks[10];
         const thumbTip   = landmarks[4];
+        const pinkyTip   = landmarks[20];
+        const wrist      = landmarks[0];
 
         const cursorX = indexTip.x * canvas.width;
         const cursorY = indexTip.y * canvas.height;
@@ -211,6 +217,18 @@
         );
         const isPinching = pinchDist < 45;
 
+        // Hand spread (for resize): distance thumb to pinky
+        const handSpread = Math.hypot(
+          (pinkyTip.x - thumbTip.x) * canvas.width,
+          (pinkyTip.y - thumbTip.y) * canvas.height
+        );
+
+        // Hand angle (for rotation): from wrist to index tip
+        const handAngle = Math.atan2(
+          indexTip.y - wrist.y,
+          indexTip.x - wrist.x
+        ) * (180 / Math.PI); // degrees
+
         // ─── Pinch logic ───────────────────────────────────────
         if (isPinching && !wasPinching) {
           selectedObject = null;
@@ -220,6 +238,10 @@
               const d = Math.hypot(obj.x - cursorX, obj.y - cursorY);
               if (d < (obj.size || 70)) {
                 selectedObject = obj;
+                initialSize = obj.size;
+                initialRotation = obj.rotation || 0;
+                initialHandSpread = handSpread;
+                initialHandAngle = handAngle;
                 break;
               }
             }
@@ -231,18 +253,32 @@
               x: cursorX,
               y: cursorY,
               size: 110,
+              rotation: 0,
               color: currentColor
             });
           }
         }
 
         if (selectedObject && isPinching) {
+          // Move
           selectedObject.x = cursorX;
           selectedObject.y = cursorY;
+
+          // Resize (expand/contract hand)
+          if (initialHandSpread > 0 && handSpread > 20) {
+            const scaleFactor = handSpread / initialHandSpread;
+            selectedObject.size = Math.max(20, initialSize * scaleFactor);
+          }
+
+          // Rotate (twist hand)
+          const angleDelta = handAngle - initialHandAngle;
+          selectedObject.rotation = (initialRotation + angleDelta) % 360;
         }
 
         if (!isPinching && wasPinching) {
           selectedObject = null;
+          initialHandSpread = 0;
+          initialHandAngle = 0;
         }
         wasPinching = isPinching;
 
@@ -256,7 +292,8 @@
             else if (f < 0.56) { currentColor = 'yellow'; currentShape = null; }
             else if (f < 0.70) { currentShape = 'circle'; }
             else if (f < 0.84) { currentShape = 'square'; }
-            else               { currentShape = 'triangle'; } // last two share zone
+            else if (f < 0.90) { currentShape = 'triangle'; }
+            else               { currentShape = 'cube'; }
           }
         }
         // ─── Free drawing ─────────────────────────────────────
@@ -290,38 +327,45 @@
             }
             ctx.stroke();
           }
-        } else if (obj.type === 'circle') {
-          ctx.beginPath();
-          ctx.arc(obj.x, obj.y, obj.size / 2, 0, Math.PI * 2);
-          ctx.stroke();
-        } else if (obj.type === 'square') {
-          ctx.beginPath();
-          ctx.rect(obj.x - obj.size/2, obj.y - obj.size/2, obj.size, obj.size);
-          ctx.stroke();
-        } else if (obj.type === 'triangle') {
-          const s = obj.size / 2;
-          ctx.beginPath();
-          ctx.moveTo(obj.x, obj.y - s);
-          ctx.lineTo(obj.x - s * 0.866, obj.y + s * 0.5);
-          ctx.lineTo(obj.x + s * 0.866, obj.y + s * 0.5);
-          ctx.closePath();
-          ctx.stroke();
-        } else if (obj.type === 'cube') {
-          const s = obj.size / 2;
-          const off = s * 0.45;
-          ctx.beginPath();
-          ctx.rect(obj.x - s, obj.y - s, obj.size, obj.size);           // front
-          ctx.moveTo(obj.x - s, obj.y - s);
-          ctx.lineTo(obj.x - s + off, obj.y - s - off);
-          ctx.lineTo(obj.x + s + off, obj.y - s - off);
-          ctx.lineTo(obj.x + s, obj.y - s);
-          ctx.closePath();                                              // top
-          ctx.moveTo(obj.x + s, obj.y - s);
-          ctx.lineTo(obj.x + s + off, obj.y - s - off);
-          ctx.lineTo(obj.x + s + off, obj.y + s - off);
-          ctx.lineTo(obj.x + s, obj.y + s);
-          ctx.closePath();                                              // right
-          ctx.stroke();
+        } else {
+          // Apply rotation for shapes
+          ctx.translate(obj.x, obj.y);
+          ctx.rotate((obj.rotation || 0) * Math.PI / 180);
+          ctx.translate(-obj.x, -obj.y);
+
+          if (obj.type === 'circle') {
+            ctx.beginPath();
+            ctx.arc(obj.x, obj.y, obj.size / 2, 0, Math.PI * 2);
+            ctx.stroke();
+          } else if (obj.type === 'square') {
+            ctx.beginPath();
+            ctx.rect(obj.x - obj.size/2, obj.y - obj.size/2, obj.size, obj.size);
+            ctx.stroke();
+          } else if (obj.type === 'triangle') {
+            const s = obj.size / 2;
+            ctx.beginPath();
+            ctx.moveTo(obj.x, obj.y - s);
+            ctx.lineTo(obj.x - s * 0.866, obj.y + s * 0.5);
+            ctx.lineTo(obj.x + s * 0.866, obj.y + s * 0.5);
+            ctx.closePath();
+            ctx.stroke();
+          } else if (obj.type === 'cube') {
+            const s = obj.size / 2;
+            const off = s * 0.45;
+            ctx.beginPath();
+            ctx.rect(obj.x - s, obj.y - s, obj.size, obj.size);           // front
+            ctx.moveTo(obj.x - s, obj.y - s);
+            ctx.lineTo(obj.x - s + off, obj.y - s - off);
+            ctx.lineTo(obj.x + s + off, obj.y - s - off);
+            ctx.lineTo(obj.x + s, obj.y - s);
+            // top
+            ctx.moveTo(obj.x + s, obj.y - s);
+            ctx.lineTo(obj.x + s + off, obj.y - s - off);
+            ctx.lineTo(obj.x + s + off, obj.y + s - off);
+            ctx.lineTo(obj.x + s, obj.y + s);
+            // right
+            ctx.stroke();
+          }
         }
         ctx.restore();
       });
