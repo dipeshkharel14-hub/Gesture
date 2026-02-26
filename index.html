@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Air Draw Pro</title>
+  <title>Air Draw Cinematic</title>
 
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
@@ -17,86 +17,122 @@
     }
 
     video, canvas {
-      position: absolute;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      object-fit: cover;
       transform: scaleX(-1);
     }
 
     .hud {
       position: fixed;
-      top: 20px;
-      left: 20px;
-      background: rgba(0,0,0,0.6);
+      top: 25px;
+      left: 25px;
+      background: rgba(0,0,0,0.45);
       border: 1px solid #00ffcc;
       padding: 15px;
-      border-radius: 10px;
-      box-shadow: 0 0 20px #00ffcc44;
+      border-radius: 12px;
+      backdrop-filter: blur(12px);
+      box-shadow: 0 0 30px #00ffcc22;
     }
 
     button {
-      background: black;
+      background: transparent;
       color: #00ffcc;
       border: 1px solid #00ffcc;
-      padding: 6px 10px;
+      padding: 8px;
+      width: 180px;
       cursor: pointer;
-      width: 100%;
-      margin-top: 6px;
+      margin-top: 10px;
     }
 
     input[type="range"] {
-      width: 100%;
+      width: 180px;
     }
   </style>
 </head>
 
 <body>
 
-<video id="video" autoplay playsinline width="640" height="480"></video>
-<canvas id="canvas" width="640" height="480"></canvas>
+<video id="video" autoplay playsinline></video>
+
+<!-- Persistent Drawing -->
+<canvas id="drawCanvas"></canvas>
+
+<!-- Skeleton Overlay -->
+<canvas id="overlayCanvas"></canvas>
 
 <div class="hud">
-  Brush Size
-  <input type="range" id="size" min="1" max="25" value="6">
-  <button id="save">Save</button>
+  Brush Size<br>
+  <input type="range" id="size" min="2" max="35" value="10"><br>
+  <button id="save">Save Drawing</button>
 </div>
 
 <script>
 const video = document.getElementById('video');
-const canvas = document.getElementById('canvas');
-const ctx = canvas.getContext('2d');
+const drawCanvas = document.getElementById('drawCanvas');
+const overlayCanvas = document.getElementById('overlayCanvas');
 
-let brushSize = 6;
-let drawColor = "magenta";
+const drawCtx = drawCanvas.getContext('2d');
+const overlayCtx = overlayCanvas.getContext('2d');
 
-let strokes = [];
-let currentStroke = [];
+function resizeCanvas() {
+  drawCanvas.width = overlayCanvas.width = window.innerWidth;
+  drawCanvas.height = overlayCanvas.height = window.innerHeight;
+}
+resizeCanvas();
+window.onresize = resizeCanvas;
 
-document.getElementById('size').oninput = e => {
-  brushSize = e.target.value;
-};
+let brushSize = 10;
+let drawColor = "#ff00ff";
+
+document.getElementById('size').oninput = e => brushSize = e.target.value;
 
 document.getElementById('save').onclick = () => {
   const link = document.createElement('a');
-  link.download = 'drawing.png';
-  link.href = canvas.toDataURL();
+  link.download = "cinematic-air-draw.png";
+  link.href = drawCanvas.toDataURL();
   link.click();
 };
 
-/* Neon Glow Drawing */
-function drawLine(x1, y1, x2, y2) {
-  ctx.strokeStyle = drawColor;
-  ctx.lineWidth = brushSize;
-  ctx.lineCap = "round";
+/* ✨ Motion Smoothing Engine */
+let smoothX = null;
+let smoothY = null;
 
-  ctx.shadowBlur = 20;
-  ctx.shadowColor = drawColor;
+const SMOOTHING = 0.65;   // higher = smoother
+const INTERPOLATION = 4;  // fills gaps
 
-  ctx.beginPath();
-  ctx.moveTo(x1, y1);
-  ctx.lineTo(x2, y2);
-  ctx.stroke();
-
-  ctx.shadowBlur = 0;
+function smoothPosition(x, y) {
+  if (smoothX === null) {
+    smoothX = x;
+    smoothY = y;
+  } else {
+    smoothX = smoothX * SMOOTHING + x * (1 - SMOOTHING);
+    smoothY = smoothY * SMOOTHING + y * (1 - SMOOTHING);
+  }
+  return { x: smoothX, y: smoothY };
 }
+
+/* Neon Ink Renderer */
+function drawNeonLine(x1, y1, x2, y2) {
+  drawCtx.strokeStyle = drawColor;
+  drawCtx.lineWidth = brushSize;
+  drawCtx.lineCap = "round";
+
+  drawCtx.shadowBlur = 30;
+  drawCtx.shadowColor = drawColor;
+
+  drawCtx.beginPath();
+  drawCtx.moveTo(x1, y1);
+  drawCtx.lineTo(x2, y2);
+  drawCtx.stroke();
+
+  drawCtx.shadowBlur = 0;
+}
+
+let prevPoint = null;
 
 /* MediaPipe */
 const hands = new Hands({
@@ -104,103 +140,78 @@ const hands = new Hands({
 });
 
 hands.setOptions({
-  maxNumHands: 2,
-  minDetectionConfidence: 0.7,
-  minTrackingConfidence: 0.7
+  maxNumHands: 1,
+  minDetectionConfidence: 0.8,
+  minTrackingConfidence: 0.8,
+  modelComplexity: 1
 });
-
-const mpDraw = window.drawConnectors;
-const mpLandmarks = window.drawLandmarks;
 
 hands.onResults(results => {
 
-  if (!results.multiHandLandmarks) return;
+  overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
 
-  results.multiHandLandmarks.forEach(landmarks => {
+  if (!results.multiHandLandmarks) {
+    prevPoint = null;
+    smoothX = smoothY = null;
+    return;
+  }
 
-    const index = landmarks[8];
-    const middle = landmarks[12];
-    const thumb = landmarks[4];
-    const ring = landmarks[16];
+  const landmarks = results.multiHandLandmarks[0];
 
-    const x = index.x * canvas.width;
-    const y = index.y * canvas.height;
+  const index = landmarks[8];
+  const middle = landmarks[12];
+  const thumb = landmarks[4];
 
-    const mx = middle.x * canvas.width;
-    const my = middle.y * canvas.height;
+  const rawX = index.x * drawCanvas.width;
+  const rawY = index.y * drawCanvas.height;
 
-    const tx = thumb.x * canvas.width;
-    const ty = thumb.y * canvas.height;
+  const mx = middle.x * drawCanvas.width;
+  const my = middle.y * drawCanvas.height;
 
-    const rx = ring.x * canvas.width;
-    const ry = ring.y * canvas.height;
+  const tx = thumb.x * drawCanvas.width;
+  const ty = thumb.y * drawCanvas.height;
 
-    const drawDist = Math.hypot(mx - x, my - y);
-    const eraseDist = Math.hypot(tx - x, ty - y);
-    const undoDist = Math.hypot(rx - x, ry - y);
+  const drawDist = Math.hypot(mx - rawX, my - rawY);
+  const eraseDist = Math.hypot(tx - rawX, ty - rawY);
 
-    /* ✏️ Draw Gesture */
-    if (drawDist < 35) {
-      if (currentStroke.length > 0) {
-        const prev = currentStroke[currentStroke.length - 1];
-        drawLine(prev.x, prev.y, x, y);
-      }
-      currentStroke.push({x, y});
-    }
+  const smoothed = smoothPosition(rawX, rawY);
 
-    /* 🧽 Eraser Gesture */
-    else if (eraseDist < 35) {
-      ctx.clearRect(x - 25, y - 25, 50, 50);
-      currentStroke = [];
-    }
+  /* ✏️ Cinematic Smooth Drawing */
+  if (drawDist < 35) {
+    if (prevPoint) {
 
-    /* ↩️ Undo Gesture */
-    else if (undoDist < 35) {
-      if (strokes.length > 0) {
-        strokes.pop();
-        redrawCanvas();
-      }
-      currentStroke = [];
-    }
-
-    else {
-      if (currentStroke.length > 0) {
-        strokes.push([...currentStroke]);
-        currentStroke = [];
+      // Interpolate between frames (removes jumpiness)
+      for (let i = 1; i <= INTERPOLATION; i++) {
+        const ix = prevPoint.x + (smoothed.x - prevPoint.x) * (i / INTERPOLATION);
+        const iy = prevPoint.y + (smoothed.y - prevPoint.y) * (i / INTERPOLATION);
+        drawNeonLine(prevPoint.x, prevPoint.y, ix, iy);
       }
     }
+    prevPoint = smoothed;
+  }
 
-    /* 🖐 Draw Hand Skeleton */
-    drawConnectors(ctx, landmarks, HAND_CONNECTIONS,
-      {color: '#00ffcc', lineWidth: 1});
+  /* 🧽 Smooth Eraser */
+  else if (eraseDist < 35) {
+    drawCtx.clearRect(smoothed.x - 50, smoothed.y - 50, 100, 100);
+    prevPoint = null;
+  }
 
-    drawLandmarks(ctx, landmarks,
-      {color: '#00ffcc', lineWidth: 1});
-  });
+  else {
+    prevPoint = null;
+  }
+
+  /* 🖐 Premium Skeleton Sensors */
+  drawConnectors(overlayCtx, landmarks, HAND_CONNECTIONS,
+    {color: '#00ffcc', lineWidth: 1});
+
+  drawLandmarks(overlayCtx, landmarks,
+    {color: '#00ffcc', lineWidth: 1});
 });
-
-/* Redraw for Undo */
-function redrawCanvas() {
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-  strokes.forEach(stroke => {
-    for (let i = 1; i < stroke.length; i++) {
-      drawLine(
-        stroke[i-1].x,
-        stroke[i-1].y,
-        stroke[i].x,
-        stroke[i].y
-      );
-    }
-  });
-}
 
 const camera = new Camera(video, {
   onFrame: async () => {
     await hands.send({image: video});
-  },
-  width: 640,
-  height: 480
+  }
 });
 
 camera.start();
